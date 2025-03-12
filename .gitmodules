@@ -1,0 +1,3 @@
+[submodule "jpa-tutorial"]
+	path = jpa-tutorial
+	url = https://github.com/leemagnon/jpa-tutorial.git
