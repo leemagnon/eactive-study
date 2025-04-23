@@ -102,8 +102,7 @@ SSL (Secure Sockets Layer) 은 클라이언트와 서버 간의 데이터 암호
 
 - 도메인 이름 일치 확인
 - 유효기간 확인
-- 인증서의 서명이 신뢰할 수 있는 CA인지 확인  
-  (브라우저에 내장된 Root CA 목록과 비교)
+- 인증서의 서명이 신뢰할 수 있는 CA인지 확인 (브라우저에 내장된 Root CA 목록과 비교)
 
 #### 💡 CA 인증서 검증 프로세스
 1. 브라우저는 내장된 CA 리스트에서 해당 인증서 발급 기관을 확인
@@ -168,7 +167,7 @@ SSL (Secure Sockets Layer) 은 클라이언트와 서버 간의 데이터 암호
 #### 💡 세션 재사용
 
 - 이미 핸드셰이크를 한 적 있는 클라이언트는 **session ID** 와 **S** 를 저장하고 있음
-- 서버도 해당 session ID를 기억하고 있다면 공개키 암호화 과정을 생략할 수 있어 빠르고 효율적인 재접속이 가능하다.
+- 서버도 해당 session ID를 기억하고 있다면 공개키 암호화 과정을 생략할 수 있어 빠르고 효율적인 재접속 가능
 
 ---
 
@@ -179,11 +178,6 @@ SSL (Secure Sockets Layer) 은 클라이언트와 서버 간의 데이터 암호
 1. 데이터 전송이 완료되면 양측은 `Close Notify` 메시지를 교환
 2. SSL 통신이 종료되었음을 서로에게 알림
 3. 사용했던 세션 키(K)를 즉시 폐기
-
-#### 💡 세션 키 폐기의 의미
-- 세션의 수립부터 종료까지 아주 짧은 시간 안에 이루어짐
-- 설령 암호가 해독되더라도 세션 키는 이미 폐기된 상태
-- 이런 임시성이 SSL/TLS 통신의 보안성을 더욱 강화
 
 ---
 
@@ -223,4 +217,189 @@ SSL (Secure Sockets Layer) 은 클라이언트와 서버 간의 데이터 암호
    - 처음에만 공개키로 대칭키(세션 키)를 안전하게 교환
    - 이후 실제 데이터는 빠른 대칭키로 암호화
    - 보안성과 성능을 모두 확보
+
 ---
+
+## mTLS 구현
+
+### 1. mTLS (Mutual TLS)란?
+mTLS는 양방향 TLS로, 클라이언트와 서버 모두가 서로의 신원을 검증하는 보안 프로토콜입니다.
+일반적인 TLS는 서버만 인증서를 가지고 있지만, mTLS는 클라이언트도 인증서를 가져야 합니다.
+
+### 2. 프로젝트 구조
+```
+jpa-tutorial/
+├── certs/                    # 인증서 디렉토리
+│   ├── ca.crt               # CA 인증서 - 인증서 발급 기관의 공개 인증서
+│   ├── ca.key               # CA 비밀키 - 인증서 발급에 사용되는 CA의 비밀키
+│   ├── server.crt           # 서버 인증서 - 서버의 신원을 증명하는 인증서
+│   ├── server.key           # 서버 비밀키 - 서버의 비밀키로, 클라이언트와의 통신 암호화에 사용
+│   ├── client.crt           # 클라이언트 인증서 - 클라이언트의 신원을 증명하는 인증서
+│   └── client.key           # 클라이언트 비밀키 - 클라이언트의 비밀키로, 서버와의 통신 암호화에 사용
+├── nginx.conf               # Nginx 설정 파일
+└── docker-compose.yml       # Docker Compose 설정
+```
+
+### 3. 인증서 생성 절차
+
+1. **CA (Certificate Authority) 생성**
+   ```bash
+   # CA 비밀키 생성
+   openssl genrsa -out ca.key 2048
+   
+   # CA 인증서 생성
+   openssl req -x509 -new -key ca.key -days 365 -out ca.crt -subj "/CN=MyCA"
+   ```
+
+2. **서버 인증서 생성**
+   ```bash
+   # 서버 비밀키 생성
+   openssl genrsa -out server.key 2048
+   
+   # CSR 생성
+   openssl req -new -key server.key -out server.csr -subj "/CN=localhost"
+   
+   # 서버 인증서 생성
+   openssl x509 -req -days 365 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt
+   ```
+
+3. **클라이언트 인증서 생성**
+   ```bash
+   # 클라이언트 비밀키 생성
+   openssl genrsa -out client.key 2048
+   
+   # CSR 생성
+   openssl req -new -key client.key -out client.csr -subj "/CN=MyClient"
+   
+   # 클라이언트 인증서 생성
+   openssl x509 -req -days 365 -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt
+   ```
+
+💡 인증서 안의 공개키 정보 확인
+```bash
+openssl x509 -in server.crt -text -noout
+```
+
+### 4. Nginx 설정
+
+```nginx
+# Nginx의 이벤트 처리 모듈 (기본 설정 사용)
+events {}
+
+http {
+    # upstream : 요청 받아서 처리할 대상 서버 목록
+    upstream backend {
+        server app:8080; 
+    }
+
+    # HSTS(HTTP Strict Transport Security) 설정 (1년)
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # HTTPS 서버
+    server {
+        listen 443 ssl;
+        server_name localhost;
+
+        # 서버 인증서 & 개인키 
+        ssl_certificate     /etc/nginx/certs/server.crt;
+        ssl_certificate_key /etc/nginx/certs/server.key;
+
+        # 클라이언트 CA 인증서 경로 (클라이언트 인증서 검증용)
+        ssl_client_certificate /etc/nginx/certs/ca.crt;
+        
+        # 클라이언트 인증서 검증 활성화(mTLS)
+        ssl_verify_client on;
+
+        # SSL/TLS 보안 설정
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers on;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 10m;
+
+        location / {
+            # backend 그룹(upstream)으로 요청 전달
+            proxy_pass http://backend;
+
+            # 헤더 정보 설정
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+
+    # HTTP를 HTTPS로 리다이렉트
+    server {
+        listen 80;
+        server_name localhost;
+        return 301 https://$server_name$request_uri;
+    }
+}
+```
+
+### 5. Docker Compose 설정
+
+```yaml
+version: "3.8"
+
+services:
+  nginx:    # Nginx 웹 서버 설정
+    image: nginx:latest
+    ports:
+      - "80:80"    # HTTP 포트: 호스트의 80포트를 컨테이너의 80포트에 매핑
+      - "443:443"  # HTTPS 포트: 호스트의 443포트를 컨테이너의 443포트에 매핑
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro  # Nginx 설정 파일을 마운트 (read-only)
+      - ./certs:/etc/nginx/certs:ro            # SSL 인증서 디렉토리를 마운트 (read-only)
+    depends_on:
+      - app
+
+  app:    # Spring Boot 애플리케이션 서비스
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development    # 개발 환경용 스테이지 사용
+    expose:
+      - "8080"    # 내부 네트워크에서만 접근 가능하도록 변경
+    environment:
+      # 데이터베이스 설정
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/${POSTGRES_DB}
+      - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+      # Spring 설정
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+      - SPRING_SQL_INIT_MODE=always
+      - SPRING_JPA_DEFER_DATASOURCE_INITIALIZATION=true
+    volumes:
+      - .:/app
+      - gradle_cache:/root/.gradle
+      - /dev/null:/app/gradle.properties
+    depends_on:
+      - db
+
+  db:    # PostgreSQL 데이터베이스 서비스
+    image: postgres:14
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:    # 데이터베이스 데이터 영속성
+  gradle_cache:     # Gradle 빌드 캐시
+```
+
+### 6. 테스트 방법
+
+```bash
+# HTTP 요청 (HTTPS로 리다이렉트)
+curl -L -k http://localhost/api/test/users --cert client.crt --key client.key --cacert ca.crt
+
+# HTTPS 요청
+curl -k https://localhost/api/test/users --cert client.crt --key client.key --cacert ca.crt
+```
